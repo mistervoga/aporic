@@ -1,7 +1,8 @@
 [package]
-name = "nanoshift"
-version = "0.2.0"
+name = "aporic"
+version = "0.3.0"
 edition = "2021"
+default-run = "aporic"
 
 [dependencies]
 anyhow = "1"
@@ -9,8 +10,11 @@ clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 dirs = "5"
 chrono = "0.4"
-csv = "1"
+
+[[bin]]
+name = "aporic"
+path = "src/main.rs"
 
 [[bin]]
 name = "nsh"
-path = "src/main.rs"
+path = "src/nsh.rs"
