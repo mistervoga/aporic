@@ -5,8 +5,6 @@ use std::path::{Path, PathBuf};
 
 const START: &str = "<!-- aporic:start version=1 -->";
 const END: &str = "<!-- aporic:end -->";
-const LEGACY_START: &str = "<!-- nanoshift:start -->";
-const LEGACY_END: &str = "<!-- nanoshift:end -->";
 
 pub fn export(conn: &Connection, project: Option<&str>, path: &Path) -> Result<usize> {
     let entries = list_entries(
@@ -107,18 +105,15 @@ fn heading(kind: EntryKind) -> &'static str {
 }
 
 fn replace_owned_section(existing: &str, generated: &str) -> Result<String> {
-    let current = marker_range(existing, START, END)?;
-    let legacy = marker_range(existing, LEGACY_START, LEGACY_END)?;
-    match (current, legacy) {
-        (Some(_), Some(_)) => bail!("target contains both Aporic and legacy markers"),
-        (Some((start, end)), None) | (None, Some((start, end))) => Ok(format!(
+    match marker_range(existing, START, END)? {
+        Some((start, end)) => Ok(format!(
             "{}{}{}",
             &existing[..start],
             generated,
             &existing[end..]
         )),
-        (None, None) if existing.is_empty() => Ok(format!("{generated}\n")),
-        (None, None) => Ok(format!("{}\n\n{generated}\n", existing.trim_end())),
+        None if existing.is_empty() => Ok(format!("{generated}\n")),
+        None => Ok(format!("{}\n\n{generated}\n", existing.trim_end())),
     }
 }
 
@@ -161,8 +156,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preserves_handwritten_content_and_upgrades_legacy_markers() {
-        let existing = "# Investigation\n\nBefore\n\n<!-- nanoshift:start -->\nold\n<!-- nanoshift:end -->\n\nAfter\n";
+    fn preserves_handwritten_content_around_the_owned_section() {
+        let existing = "# Investigation\n\nBefore\n\n<!-- aporic:start version=1 -->\nold\n<!-- aporic:end -->\n\nAfter\n";
         let generated = "<!-- aporic:start version=1 -->\nnew\n<!-- aporic:end -->";
         let output = replace_owned_section(existing, generated).expect("replace");
         assert_eq!(

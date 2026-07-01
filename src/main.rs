@@ -2,11 +2,13 @@ mod db;
 mod domain;
 mod json;
 mod obsidian;
+mod tui;
+mod tutor;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use domain::{Entry, EntryFilter, EntryKind, MathKind, NewEntry, RelationKind, Trace};
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -118,10 +120,6 @@ enum Command {
     /// Record a symbolic or numerical derivation
     Calculate { text: String },
 
-    /// Compatibility alias: create an action
-    #[command(hide = true)]
-    Add { task: String },
-
     /// List entries
     List {
         #[arg(long, value_name = "KIND")]
@@ -166,17 +164,11 @@ enum Command {
     /// Show database and entry status
     Status,
 
-    /// Compatibility command: save a default project for old nsh workflows
-    #[command(hide = true)]
-    Switch { project: String },
+    /// Open the interactive terminal view
+    Tui,
 
-    /// Compatibility view: list open actions
-    #[command(hide = true)]
-    Today,
-
-    /// Compatibility view: list open actions without IDs
-    #[command(hide = true)]
-    Focus,
+    /// Interactive, vimtutor-style walkthrough in a sandbox database
+    Tutor,
 
     /// Export an Aporic-owned section into an Obsidian note
     Obsidian {
@@ -204,14 +196,25 @@ struct StatusOutput {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut conn = db::connect_and_init()?;
-    let project = effective_project(&conn, cli.project.as_deref())?;
+    let project = effective_project(cli.project.as_deref());
+    dispatch(&mut conn, &cli, project.as_deref(), &cli.command)
+}
 
-    match &cli.command {
+/// Runs one parsed command against an open connection. Shared by the CLI
+/// entry point and the sandboxed tutor so there is one implementation of
+/// command behavior, not two.
+pub(crate) fn dispatch(
+    conn: &mut Connection,
+    cli: &Cli,
+    project: Option<&str>,
+    command: &Command,
+) -> Result<()> {
+    match command {
         Command::Init => {
             let status = StatusOutput {
                 product: "aporic",
-                schema_version: db::schema_version(&conn)?,
-                project: project_name(project.as_deref()),
+                schema_version: db::schema_version(conn)?,
+                project: project_name(project),
                 entries: 0,
                 open_questions: 0,
                 ready_actions: 0,
@@ -223,110 +226,36 @@ fn main() -> Result<()> {
                 println!("aporic ready (schema {})", status.schema_version);
             }
         }
-        Command::Observe { text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Observation,
-            None,
-            text,
-        )?,
-        Command::Claim { text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Claim,
-            None,
-            text,
-        )?,
-        Command::Assume { text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Assumption,
-            None,
-            text,
-        )?,
-        Command::Ask { text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Question,
-            None,
-            text,
-        )?,
-        Command::Imply { text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Implication,
-            None,
-            text,
-        )?,
-        Command::Act { text } | Command::Add { task: text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Action,
-            None,
-            text,
-        )?,
-        Command::Outcome { text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Outcome,
-            None,
-            text,
-        )?,
-        Command::Learn { text } => capture(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            EntryKind::Learning,
-            None,
-            text,
-        )?,
-        Command::Define { text } => capture_math(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            MathKind::Definition,
-            text,
-        )?,
-        Command::Conjecture { text } => capture_math(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            MathKind::Conjecture,
-            text,
-        )?,
-        Command::Lemma { text } => {
-            capture_math(&mut conn, &cli, project.as_deref(), MathKind::Lemma, text)?
+        Command::Observe { text } => {
+            capture(conn, cli, project, EntryKind::Observation, None, text)?
         }
-        Command::Theorem { text } => {
-            capture_math(&mut conn, &cli, project.as_deref(), MathKind::Theorem, text)?
+        Command::Claim { text } => capture(conn, cli, project, EntryKind::Claim, None, text)?,
+        Command::Assume { text } => {
+            capture(conn, cli, project, EntryKind::Assumption, None, text)?
         }
-        Command::Proof { text } => {
-            capture_math(&mut conn, &cli, project.as_deref(), MathKind::Proof, text)?
+        Command::Ask { text } => capture(conn, cli, project, EntryKind::Question, None, text)?,
+        Command::Imply { text } => {
+            capture(conn, cli, project, EntryKind::Implication, None, text)?
         }
-        Command::Counterexample { text } => capture_math(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            MathKind::Counterexample,
-            text,
-        )?,
-        Command::Example { text } => {
-            capture_math(&mut conn, &cli, project.as_deref(), MathKind::Example, text)?
+        Command::Act { text } => capture(conn, cli, project, EntryKind::Action, None, text)?,
+        Command::Outcome { text } => capture(conn, cli, project, EntryKind::Outcome, None, text)?,
+        Command::Learn { text } => capture(conn, cli, project, EntryKind::Learning, None, text)?,
+        Command::Define { text } => {
+            capture_math(conn, cli, project, MathKind::Definition, text)?
         }
-        Command::Calculate { text } => capture_math(
-            &mut conn,
-            &cli,
-            project.as_deref(),
-            MathKind::Calculation,
-            text,
-        )?,
+        Command::Conjecture { text } => {
+            capture_math(conn, cli, project, MathKind::Conjecture, text)?
+        }
+        Command::Lemma { text } => capture_math(conn, cli, project, MathKind::Lemma, text)?,
+        Command::Theorem { text } => capture_math(conn, cli, project, MathKind::Theorem, text)?,
+        Command::Proof { text } => capture_math(conn, cli, project, MathKind::Proof, text)?,
+        Command::Counterexample { text } => {
+            capture_math(conn, cli, project, MathKind::Counterexample, text)?
+        }
+        Command::Example { text } => capture_math(conn, cli, project, MathKind::Example, text)?,
+        Command::Calculate { text } => {
+            capture_math(conn, cli, project, MathKind::Calculation, text)?
+        }
         Command::List {
             r#type,
             state,
@@ -335,9 +264,9 @@ fn main() -> Result<()> {
             let kind = r#type.as_deref().map(EntryKind::from_str).transpose()?;
             let math_kind = math_type.as_deref().map(MathKind::from_str).transpose()?;
             let entries = domain::list_entries(
-                &conn,
+                conn,
                 EntryFilter {
-                    project: project.as_deref(),
+                    project,
                     kind,
                     state: state.as_deref(),
                     math_kind,
@@ -346,7 +275,7 @@ fn main() -> Result<()> {
             output_entries(&entries, cli.json)?;
         }
         Command::Show { id } => {
-            let entry = domain::get_entry(&conn, id)?;
+            let entry = domain::get_entry(conn, id)?;
             if cli.json {
                 print_json_value(&json::entry(&entry));
             } else {
@@ -360,7 +289,7 @@ fn main() -> Result<()> {
             rationale,
         } => {
             let relation = domain::create_relation(
-                &mut conn,
+                conn,
                 from,
                 RelationKind::from_str(relation)?,
                 to,
@@ -379,11 +308,11 @@ fn main() -> Result<()> {
             }
         }
         Command::Trace { id, depth } => {
-            let trace = domain::trace_entry(&conn, id, (*depth).into())?;
+            let trace = domain::trace_entry(conn, id, (*depth).into())?;
             output_trace(&trace, cli.json)?;
         }
         Command::Complete { id } => {
-            let entry = domain::complete_action(&mut conn, id)?;
+            let entry = domain::complete_action(conn, id)?;
             if cli.json {
                 print_json_value(&json::entry(&entry));
             } else {
@@ -392,9 +321,9 @@ fn main() -> Result<()> {
         }
         Command::Actions { ready } => {
             let entries = domain::list_entries(
-                &conn,
+                conn,
                 EntryFilter {
-                    project: project.as_deref(),
+                    project,
                     kind: Some(EntryKind::Action),
                     state: ready.then_some("open"),
                     math_kind: None,
@@ -403,7 +332,7 @@ fn main() -> Result<()> {
             output_entries(&entries, cli.json)?;
         }
         Command::Projects => {
-            let projects = domain::list_projects(&conn)?;
+            let projects = domain::list_projects(conn)?;
             if cli.json {
                 print_json_value(&json::strings(&projects));
             } else {
@@ -412,32 +341,12 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Status => output_status(&conn, project.as_deref(), cli.json)?,
-        Command::Switch { project } => {
-            save_legacy_scope(&conn, project)?;
-            if cli.json {
-                print_json_value(&format!("{{\"default_project\":{}}}", json::quote(project)));
-            } else {
-                println!("default project: {project} (prefer --project for new workflows)");
-            }
-        }
-        Command::Today => {
-            let entries = open_actions(&conn, project.as_deref())?;
-            output_entries(&entries, cli.json)?;
-        }
-        Command::Focus => {
-            let entries = open_actions(&conn, project.as_deref())?;
-            if cli.json {
-                print_json_value(&json::entries(&entries));
-            } else {
-                for entry in entries {
-                    println!("- {}", entry.body);
-                }
-            }
-        }
+        Command::Status => output_status(conn, project, cli.json)?,
+        Command::Tui => tui::run(conn, project)?,
+        Command::Tutor => tutor::run()?,
         Command::Obsidian { command } => match command {
             ObsidianCommand::Export { path } => {
-                let count = obsidian::export(&conn, project.as_deref(), path)?;
+                let count = obsidian::export(conn, project, path)?;
                 if cli.json {
                     print_json_value(&format!(
                         "{{\"exported\":{count},\"path\":{}}}",
@@ -524,42 +433,12 @@ fn validate_verification(value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn effective_project(conn: &Connection, explicit: Option<&str>) -> Result<Option<String>> {
-    if let Some(project) = explicit {
-        return Ok((!project.eq_ignore_ascii_case("global")).then(|| project.to_string()));
-    }
-    Ok(db::legacy_scope(conn)?.filter(|project| !project.eq_ignore_ascii_case("global")))
-}
-
-fn save_legacy_scope(conn: &Connection, project: &str) -> Result<()> {
-    let project = project.trim();
-    if project.is_empty() {
-        anyhow::bail!("project cannot be empty");
-    }
-    if !project.eq_ignore_ascii_case("global") {
-        conn.execute(
-            "INSERT OR IGNORE INTO projects(name) VALUES (?1)",
-            params![project],
-        )?;
-    }
-    conn.execute(
-        "INSERT INTO meta(key, value) VALUES ('scope', ?1)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![project],
-    )?;
-    Ok(())
-}
-
-fn open_actions(conn: &Connection, project: Option<&str>) -> Result<Vec<Entry>> {
-    domain::list_entries(
-        conn,
-        EntryFilter {
-            project,
-            kind: Some(EntryKind::Action),
-            state: Some("open"),
-            math_kind: None,
-        },
-    )
+/// A project is always explicit: pass `--project`, or omit it for `global`.
+/// There is no remembered default.
+pub(crate) fn effective_project(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .filter(|project| !project.eq_ignore_ascii_case("global"))
+        .map(str::to_string)
 }
 
 fn output_status(conn: &Connection, project: Option<&str>, json: bool) -> Result<()> {

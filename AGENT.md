@@ -90,7 +90,7 @@ Internally these are typed entries and relations. Externally they should feel li
 
 ### Current repository state
 
-The codebase is transitioning from the Nanoshift prototype to Aporic. Schema versioning, legacy-task migration, typed entries and relations, trace queries, JSON output, and versioned Obsidian export are implemented. MCP, AI providers, source-management commands, repository automation, bidirectional sync, and the TUI remain roadmap work. Do not document planned capabilities as complete.
+The one-time Nanoshift-to-Aporic data migration and the transitional `nsh` compatibility surface are complete and removed from the codebase; there is no legacy code path left to maintain. Schema versioning, typed entries and relations, trace queries, JSON output, versioned Obsidian export, an interactive terminal view (`aporic tui`), and a sandboxed interactive tutor (`aporic tutor`) are implemented. MCP, AI providers, source-management commands, repository automation, and bidirectional Obsidian sync remain roadmap work. Do not document planned capabilities as complete.
 
 Transition requirements:
 

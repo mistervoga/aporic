@@ -1,21 +1,12 @@
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, Transaction};
 use std::path::PathBuf;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 fn database_path() -> Result<PathBuf> {
     let base = dirs::data_dir().context("cannot resolve user data directory")?;
-    let aporic = base.join("aporic").join("aporic.db");
-    let legacy = base.join("nanoshift").join("tasks.db");
-
-    if aporic.exists() || !legacy.exists() {
-        Ok(aporic)
-    } else {
-        // During the transition, use the legacy database in place. Copying an
-        // active SQLite database could omit WAL state and create two truths.
-        Ok(legacy)
-    }
+    Ok(base.join("aporic").join("aporic.db"))
 }
 
 pub fn connect_and_init() -> Result<Connection> {
@@ -39,32 +30,13 @@ pub(crate) fn ensure_schema(conn: &mut Connection) -> Result<()> {
             applied_at TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE
         );
-
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            description TEXT NOT NULL,
-            completed INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT,
-            completed_at TEXT,
-            project_id INTEGER NULL,
-            FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
-        );
-
-        INSERT OR IGNORE INTO meta(key, value) VALUES ('scope', 'global');
         "#,
     )?;
 
-    migrate_legacy_task_columns(conn)?;
     let mut current = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get::<_, Option<i64>>(0)
@@ -78,6 +50,10 @@ pub(crate) fn ensure_schema(conn: &mut Connection) -> Result<()> {
     if current < 2 {
         migrate_v2(conn)?;
         current = 2;
+    }
+    if current < 3 {
+        migrate_v3(conn)?;
+        current = 3;
     }
     anyhow::ensure!(
         current <= SCHEMA_VERSION,
@@ -104,84 +80,30 @@ fn migrate_v2(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-fn migrate_legacy_task_columns(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    if !columns.iter().any(|column| column == "updated_at") {
-        conn.execute("ALTER TABLE tasks ADD COLUMN updated_at TEXT", [])?;
-        conn.execute(
-            "UPDATE tasks SET updated_at=created_at WHERE updated_at IS NULL",
-            [],
-        )?;
-    }
-    if !columns.iter().any(|column| column == "completed_at") {
-        conn.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT", [])?;
-    }
-    Ok(())
-}
-
 fn migrate_v1(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
     create_v1_tables(&tx)?;
-
-    let legacy_tasks = {
-        let mut stmt = tx.prepare(
-            "SELECT id, description, completed, created_at,
-                    COALESCE(updated_at, created_at), completed_at, project_id
-             FROM tasks ORDER BY id",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, bool>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-            ))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-
-    for (legacy_id, body, completed, created, updated, completed_at, project_id) in legacy_tasks {
-        let id = new_id(&tx)?;
-        let state = if completed { "done" } else { "open" };
-        tx.execute(
-            "INSERT INTO entries(
-                id, legacy_task_id, kind, body, state, project_id, author, origin,
-                created_at, updated_at, completed_at, revision
-             ) VALUES (?1, ?2, 'action', ?3, ?4, ?5, 'legacy-user',
-                       'migration:nanoshift', ?6, ?7, ?8, 1)",
-            params![
-                id,
-                legacy_id,
-                body,
-                state,
-                project_id,
-                created,
-                updated,
-                completed_at
-            ],
-        )?;
-        insert_audit_event(
-            &tx,
-            "migration:nanoshift",
-            "migrate_task",
-            &id,
-            &format!(r#"{{"legacy_task_id":{legacy_id}}}"#),
-            &id,
-            &updated,
-        )?;
-    }
 
     let now = chrono::Utc::now().to_rfc3339();
     tx.execute(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?1)",
         params![now],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn migrate_v3(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        r#"
+        DROP TABLE IF EXISTS tasks;
+        DROP TABLE IF EXISTS meta;
+        "#,
+    )?;
+    tx.execute(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?1)",
+        params![chrono::Utc::now().to_rfc3339()],
     )?;
     tx.commit()?;
     Ok(())
@@ -314,54 +236,17 @@ pub fn schema_version(conn: &Connection) -> Result<i64> {
         .unwrap_or(0))
 }
 
-pub fn legacy_scope(conn: &Connection) -> Result<Option<String>> {
-    Ok(conn
-        .query_row("SELECT value FROM meta WHERE key='scope'", [], |row| {
-            row.get(0)
-        })
-        .optional()?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn migrates_legacy_tasks_once() {
+    fn creates_current_schema_from_scratch() {
         let mut conn = Connection::open_in_memory().expect("open database");
-        conn.execute_batch(
-            r#"
-            CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
-            CREATE TABLE tasks (
-                id INTEGER PRIMARY KEY,
-                description TEXT NOT NULL,
-                completed INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                project_id INTEGER
-            );
-            INSERT INTO tasks VALUES (7, 'legacy action', 1, '2026-01-01T00:00:00Z', NULL);
-            "#,
-        )
-        .expect("legacy schema");
+        ensure_schema(&mut conn).expect("create schema");
+        ensure_schema(&mut conn).expect("schema creation is idempotent");
 
-        ensure_schema(&mut conn).expect("migrate");
-        ensure_schema(&mut conn).expect("migration is idempotent");
-
-        let row: (String, String, i64, i64) = conn
-            .query_row(
-                "SELECT kind, state, legacy_task_id, revision FROM entries",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .expect("migrated entry");
-        assert_eq!(row, ("action".into(), "done".into(), 7, 1));
-        assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM entries", [], |row| row
-                .get::<_, i64>(0))
-                .expect("count"),
-            1
-        );
-        assert_eq!(schema_version(&conn).expect("version"), 2);
+        assert_eq!(schema_version(&conn).expect("version"), SCHEMA_VERSION);
         let math_columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('entries')
@@ -371,5 +256,37 @@ mod tests {
             )
             .expect("math columns");
         assert_eq!(math_columns, 3);
+        let legacy_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'meta')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy table check");
+        assert_eq!(legacy_tables, 0);
+    }
+
+    #[test]
+    fn drops_legacy_tables_from_an_already_migrated_database() {
+        let mut conn = Connection::open_in_memory().expect("open database");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE tasks (id INTEGER PRIMARY KEY, description TEXT NOT NULL);
+            "#,
+        )
+        .expect("simulate a pre-cleanup database");
+
+        migrate_v3(&mut conn).expect("drop legacy tables");
+
+        let legacy_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'meta')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy table check");
+        assert_eq!(legacy_tables, 0);
     }
 }
