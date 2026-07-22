@@ -5,7 +5,7 @@
 use crate::domain::{self, EntryFilter, EntryKind, NewEntry};
 use crate::{dispatch, effective_project, Cli, Command, ObsidianCommand};
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use rusqlite::Connection;
 use std::io::{self, Write};
 
@@ -18,6 +18,47 @@ impl std::fmt::Display for ExitLesson {
     }
 }
 impl std::error::Error for ExitLesson {}
+
+#[derive(Debug)]
+struct ExitTutor;
+
+impl std::fmt::Display for ExitTutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit tutor")
+    }
+}
+impl std::error::Error for ExitTutor {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TutorControl {
+    Help,
+    Commands,
+    Menu,
+    Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepOutcome {
+    Complete,
+    Menu,
+    Quit,
+}
+
+fn tutor_control(input: &str) -> Option<TutorControl> {
+    match input.trim() {
+        "help" => Some(TutorControl::Help),
+        "commands" => Some(TutorControl::Commands),
+        "menu" => Some(TutorControl::Menu),
+        "q" | "quit" | "exit" => Some(TutorControl::Quit),
+        _ => None,
+    }
+}
+
+fn command_help() -> String {
+    let mut bytes = Vec::new();
+    Cli::command().write_long_help(&mut bytes).unwrap();
+    String::from_utf8(bytes).unwrap()
+}
 
 pub fn run() -> Result<()> {
     let mut conn = Connection::open_in_memory()?;
@@ -53,6 +94,15 @@ pub fn run() -> Result<()> {
             "5" => lesson_tui(&mut conn),
             "6" => lesson_obsidian(&mut conn),
             "q" | "quit" | "exit" => break,
+            "help" => {
+                println!("Choose a topic number, or use commands, menu, or quit.");
+                continue;
+            }
+            "commands" => {
+                println!("{}", command_help());
+                continue;
+            }
+            "menu" => continue,
             "" => continue,
             other => {
                 println!("unknown option: {other}");
@@ -60,6 +110,9 @@ pub fn run() -> Result<()> {
             }
         };
         if let Err(err) = outcome {
+            if err.downcast_ref::<ExitTutor>().is_some() {
+                break;
+            }
             if err.downcast_ref::<ExitLesson>().is_none() {
                 return Err(err);
             }
@@ -89,23 +142,35 @@ fn step(
     intro: &str,
     hint: &str,
     expect: impl Fn(&Cli) -> bool,
-) -> Result<()> {
+) -> Result<StepOutcome> {
     println!("{intro}");
     loop {
         let Some(line) = read_line("aporic tutor> ")? else {
-            return Err(anyhow!(ExitLesson));
+            return Ok(StepOutcome::Quit);
         };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        if matches!(trimmed, "menu" | "q" | "quit" | "exit") {
-            return Err(anyhow!(ExitLesson));
+        match tutor_control(trimmed) {
+            Some(TutorControl::Help) => {
+                println!("Current step: {hint}");
+                continue;
+            }
+            Some(TutorControl::Commands) => {
+                println!("{}", command_help());
+                continue;
+            }
+            Some(TutorControl::Menu) => return Ok(StepOutcome::Menu),
+            Some(TutorControl::Quit) => return Ok(StepOutcome::Quit),
+            None => {}
         }
         let tokens = match shell_words::split(trimmed) {
             Ok(tokens) => tokens,
             Err(_) => {
-                println!("could not parse quoting in that line. {hint}");
+                println!(
+                    "could not parse quoting in that line. {hint} Type help to repeat the current instructions."
+                );
                 continue;
             }
         };
@@ -114,7 +179,7 @@ fn step(
             Ok(cli) => cli,
             Err(err) => {
                 println!("{err}");
-                println!("{hint}");
+                println!("{hint} Type help to repeat the current instructions.");
                 continue;
             }
         };
@@ -129,7 +194,20 @@ fn step(
             continue;
         }
         println!();
-        return Ok(());
+        return Ok(StepOutcome::Complete);
+    }
+}
+
+fn topic_step(
+    conn: &mut Connection,
+    intro: &str,
+    hint: &str,
+    expect: impl Fn(&Cli) -> bool,
+) -> Result<()> {
+    match step(conn, intro, hint, expect)? {
+        StepOutcome::Complete => Ok(()),
+        StepOutcome::Menu => Err(anyhow!(ExitLesson)),
+        StepOutcome::Quit => Err(anyhow!(ExitTutor)),
     }
 }
 
@@ -150,7 +228,7 @@ fn lesson_vocabulary(conn: &mut Connection) -> Result<()> {
          (Mathematics uses the same model with definition, conjecture, lemma,\n\
          theorem, proof, counterexample, example, and calculation.)\n"
     );
-    step(
+    topic_step(
         conn,
         "Try it: check the sandbox's status.",
         "type: status",
@@ -166,31 +244,31 @@ fn lesson_first_chain(conn: &mut Connection) -> Result<()> {
          Each command below prints the id of what it created. You'll use two\n\
          of those ids in the last step, so keep an eye on the output.\n"
     );
-    step(
+    topic_step(
         conn,
         "Step 1 — observe something. Try:\n  observe \"the checkout page took 3s to load\"",
         "start the line with observe, followed by a quoted sentence",
         |cli| matches!(cli.command, Command::Observe { .. }),
     )?;
-    step(
+    topic_step(
         conn,
         "Step 2 — turn it into a question. Try:\n  ask \"why did checkout get slower?\"",
         "start the line with ask",
         |cli| matches!(cli.command, Command::Ask { .. }),
     )?;
-    step(
+    topic_step(
         conn,
         "Step 3 — decide what to do about it. Try:\n  act \"profile the checkout endpoint\"",
         "start the line with act",
         |cli| matches!(cli.command, Command::Act { .. }),
     )?;
-    step(
+    topic_step(
         conn,
         "Step 4 — record what happened. Try:\n  outcome \"the product-image query was the bottleneck\"",
         "start the line with outcome",
         |cli| matches!(cli.command, Command::Outcome { .. }),
     )?;
-    step(
+    topic_step(
         conn,
         "Step 5 — capture the durable lesson. Try:\n  learn \"cache expensive queries before they reach checkout\"",
         "start the line with learn",
@@ -201,7 +279,7 @@ fn lesson_first_chain(conn: &mut Connection) -> Result<()> {
          link <id> answers <id>\n\
          (other relations exist too: supports, challenges, motivates, result-of, derived-from...)"
     );
-    step(
+    topic_step(
         conn,
         "Step 6 — link two entries.",
         "type: link <id> <relation> <id> — use ids printed earlier in this lesson",
@@ -218,16 +296,16 @@ fn lesson_projects(conn: &mut Connection) -> Result<()> {
          either scoped to one project with --project, or belongs to 'global'\n\
          if you omit it. This is deliberate: no hidden state to lose track of.\n"
     );
-    step(conn, "Try: projects", "type: projects", |cli| {
+    topic_step(conn, "Try: projects", "type: projects", |cli| {
         matches!(cli.command, Command::Projects)
     })?;
-    step(
+    topic_step(
         conn,
         "Now capture something scoped to a project. Try:\n  observe --project demo \"trying out project scoping\"",
         "add --project demo before or after the quoted text",
         |cli| matches!(cli.command, Command::Observe { .. }) && cli.project.is_some(),
     )?;
-    step(
+    topic_step(
         conn,
         "Check again — 'demo' should now be listed too:",
         "type: projects",
@@ -269,7 +347,7 @@ fn lesson_inspecting(conn: &mut Connection) -> Result<()> {
         "\nLesson 4: Inspecting\n=====================\n\
          list, show, trace, and status are all read-only.\n"
     );
-    step(conn, "Try: list", "type: list", |cli| {
+    topic_step(conn, "Try: list", "type: list", |cli| {
         matches!(cli.command, Command::List { .. })
     })?;
 
@@ -280,19 +358,19 @@ fn lesson_inspecting(conn: &mut Connection) -> Result<()> {
     }
     println!();
 
-    step(
+    topic_step(
         conn,
         "Try: show <id> — use one of the ids above (a unique prefix is enough)",
         "type: show <id>",
         |cli| matches!(cli.command, Command::Show { .. }),
     )?;
-    step(
+    topic_step(
         conn,
         "Try: trace <id> — shows the local reasoning graph around an entry",
         "type: trace <id>",
         |cli| matches!(cli.command, Command::Trace { .. }),
     )?;
-    step(conn, "Try: status", "type: status", |cli| {
+    topic_step(conn, "Try: status", "type: status", |cli| {
         matches!(cli.command, Command::Status)
     })?;
     Ok(())
@@ -328,7 +406,7 @@ fn lesson_obsidian(conn: &mut Connection) -> Result<()> {
          it in a real note is preserved untouched on every re-export.\n"
     );
     let hint = format!("type: obsidian export {}", path.display());
-    step(
+    topic_step(
         conn,
         &format!(
             "Try (this writes a scratch file, not anything real):\n  obsidian export {}",
@@ -350,4 +428,29 @@ fn lesson_obsidian(conn: &mut Connection) -> Result<()> {
     let _ = std::fs::remove_file(&path);
     println!("(scratch file removed)");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_controls_without_treating_cli_commands_as_controls() {
+        assert_eq!(tutor_control("help"), Some(TutorControl::Help));
+        assert_eq!(tutor_control("commands"), Some(TutorControl::Commands));
+        assert_eq!(tutor_control("menu"), Some(TutorControl::Menu));
+        assert_eq!(tutor_control("q"), Some(TutorControl::Quit));
+        assert_eq!(tutor_control("quit"), Some(TutorControl::Quit));
+        assert_eq!(tutor_control("exit"), Some(TutorControl::Quit));
+        assert_eq!(tutor_control("observe q"), None);
+    }
+
+    #[test]
+    fn command_reference_comes_from_clap() {
+        let help = command_help();
+        assert!(help.contains("Commands:"));
+        assert!(help.contains("observe"));
+        assert!(help.contains("tutor"));
+        assert!(!help.contains("ai examine"));
+    }
 }
