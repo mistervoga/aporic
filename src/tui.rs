@@ -4,7 +4,9 @@
 use crate::domain::{self, Entry, EntryFilter, EntryKind, Trace};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::{execute, ExecutableCommand};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -125,7 +127,10 @@ impl App {
 
     fn visible(&self) -> Vec<&Entry> {
         let tab = self.tab();
-        self.entries.iter().filter(|entry| tab.matches(entry)).collect()
+        self.entries
+            .iter()
+            .filter(|entry| tab.matches(entry))
+            .collect()
     }
 
     fn visible_len(&self) -> usize {
@@ -274,8 +279,7 @@ fn event_loop(
                 }
             }
             KeyCode::Char('?') => {
-                app.status =
-                    "full walkthrough: run  aporic tutor  outside the TUI".to_string();
+                app.status = "full walkthrough: run  aporic tutor  outside the TUI".to_string();
             }
             _ => {}
         }
@@ -316,7 +320,11 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .title(format!(" aporic \u{2014} project: {project_label} ")),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        );
     frame.render_widget(tabs, area);
 }
 
@@ -372,7 +380,11 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
     let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(" detail (enter) "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" detail (enter) "),
+        )
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
@@ -382,10 +394,7 @@ fn draw_trace(frame: &mut Frame, trace: &Trace, area: Rect) {
     for entry in &trace.entries {
         let marker = if entry.id == trace.root { "*" } else { " " };
         let summary = entry.body.replace(['\n', '\r'], " ");
-        lines.push(Line::from(format!(
-            "{marker} {:<11} {summary}",
-            entry.kind
-        )));
+        lines.push(Line::from(format!("{marker} {:<11} {summary}", entry.kind)));
     }
     if !trace.relations.is_empty() {
         lines.push(Line::from(""));

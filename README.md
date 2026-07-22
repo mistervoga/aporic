@@ -67,7 +67,7 @@ options.
 | `observe` / `claim` / `assume` / `ask` / `imply` / `act` / `outcome` / `learn` | Capture one typed reasoning entry |
 | `define` / `conjecture` / `lemma` / `theorem` / `proof` / `counterexample` / `example` / `calculate` | Capture one typed mathematical entry |
 | `list` | List entries, optionally filtered by `--type`, `--state`, `--math-type` |
-| `show <id>` | Show one entry by UUID, unique UUID prefix, or legacy task ID |
+| `show <id>` | Show one entry by UUID or unique UUID prefix |
 | `link <from> <relation> <to>` | Connect two entries with a typed, directed relation |
 | `trace <id>` | Show the local reasoning graph around an entry |
 | `complete <id>` | Mark an action as done |
@@ -100,12 +100,24 @@ macOS:   ~/Library/Application Support/aporic/aporic.db
 Windows: %APPDATA%/aporic/aporic.db
 ```
 
-## Design and roadmap
+## Roadmap
 
-See [AGENT.md](AGENT.md) for the product model, developer/IT use cases,
-architecture, safety requirements, MCP design, testing strategy, and phased
-roadmap. [AGENTS.md](AGENTS.md) is the conventional agent-discovery entry
-point.
+Implemented: schema versioning and migrations, typed entries and relations,
+trace queries, projects, stable `--json` output, audit events, the TUI, the
+tutor, and versioned Obsidian export.
+
+Next, in order:
+
+1. Source-management commands, so evidence is captured and re-checked rather than only referenced.
+2. A read-only MCP server for entries, evidence, and traces.
+3. Guarded, attributed MCP proposals and mutations.
+4. `aporic ai examine`, against a deterministic fake provider before any real one.
+5. Bidirectional Obsidian sync, once conflicts have a defined resolution.
+
+## Contributing
+
+Aporic is an open community project. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for how to build, test, and propose changes.
 
 ## License
 

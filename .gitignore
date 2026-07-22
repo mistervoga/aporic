@@ -1,3 +1,7 @@
 /target
 tasks.db
 *.csv
+
+# Local-only agent instructions, deliberately not published
+/AGENT.md
+/AGENTS.md

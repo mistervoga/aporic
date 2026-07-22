@@ -230,19 +230,13 @@ pub(crate) fn dispatch(
             capture(conn, cli, project, EntryKind::Observation, None, text)?
         }
         Command::Claim { text } => capture(conn, cli, project, EntryKind::Claim, None, text)?,
-        Command::Assume { text } => {
-            capture(conn, cli, project, EntryKind::Assumption, None, text)?
-        }
+        Command::Assume { text } => capture(conn, cli, project, EntryKind::Assumption, None, text)?,
         Command::Ask { text } => capture(conn, cli, project, EntryKind::Question, None, text)?,
-        Command::Imply { text } => {
-            capture(conn, cli, project, EntryKind::Implication, None, text)?
-        }
+        Command::Imply { text } => capture(conn, cli, project, EntryKind::Implication, None, text)?,
         Command::Act { text } => capture(conn, cli, project, EntryKind::Action, None, text)?,
         Command::Outcome { text } => capture(conn, cli, project, EntryKind::Outcome, None, text)?,
         Command::Learn { text } => capture(conn, cli, project, EntryKind::Learning, None, text)?,
-        Command::Define { text } => {
-            capture_math(conn, cli, project, MathKind::Definition, text)?
-        }
+        Command::Define { text } => capture_math(conn, cli, project, MathKind::Definition, text)?,
         Command::Conjecture { text } => {
             capture_math(conn, cli, project, MathKind::Conjecture, text)?
         }

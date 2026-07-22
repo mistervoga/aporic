@@ -232,7 +232,6 @@ impl FromStr for RelationKind {
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub id: String,
-    pub legacy_task_id: Option<i64>,
     pub kind: EntryKind,
     pub body: String,
     pub details: Option<String>,
@@ -403,7 +402,7 @@ pub fn get_entry(conn: &Connection, identifier: &str) -> Result<Entry> {
 
 pub fn list_entries(conn: &Connection, filter: EntryFilter<'_>) -> Result<Vec<Entry>> {
     let mut sql = String::from(
-        "SELECT e.id, e.legacy_task_id, e.kind, e.body, e.details, e.state,
+        "SELECT e.id, e.kind, e.body, e.details, e.state,
                 p.name, e.author, e.origin, e.source_uri, e.repository,
                 e.commit_hash, e.file_path, e.line_number, e.occurred_at,
                 e.created_at, e.updated_at, e.revision, e.math_kind,
@@ -550,19 +549,6 @@ fn resolve_id(conn: &Connection, identifier: &str) -> Result<String> {
     if identifier.is_empty() {
         bail!("entry id cannot be empty");
     }
-    if let Ok(legacy) = identifier.parse::<i64>() {
-        if let Some(id) = conn
-            .query_row(
-                "SELECT id FROM entries WHERE legacy_task_id=?1",
-                params![legacy],
-                |row| row.get(0),
-            )
-            .optional()?
-        {
-            return Ok(id);
-        }
-    }
-
     let pattern = format!("{identifier}%");
     let mut stmt = conn.prepare("SELECT id FROM entries WHERE id LIKE ?1 ORDER BY id LIMIT 2")?;
     let ids = stmt
@@ -578,7 +564,7 @@ fn resolve_id(conn: &Connection, identifier: &str) -> Result<String> {
 fn query_entry_by_id(conn: &Connection, id: &str) -> Result<Option<Entry>> {
     Ok(conn
         .query_row(
-            "SELECT e.id, e.legacy_task_id, e.kind, e.body, e.details, e.state,
+            "SELECT e.id, e.kind, e.body, e.details, e.state,
                     p.name, e.author, e.origin, e.source_uri, e.repository,
                     e.commit_hash, e.file_path, e.line_number, e.occurred_at,
                     e.created_at, e.updated_at, e.revision, e.math_kind,
@@ -592,42 +578,41 @@ fn query_entry_by_id(conn: &Connection, id: &str) -> Result<Option<Entry>> {
 }
 
 fn map_entry(row: &Row<'_>) -> rusqlite::Result<Entry> {
-    let kind_text: String = row.get(2)?;
+    let kind_text: String = row.get(1)?;
     let kind = EntryKind::from_str(&kind_text).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, error.into())
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, error.into())
     })?;
     Ok(Entry {
         id: row.get(0)?,
-        legacy_task_id: row.get(1)?,
         kind,
-        body: row.get(3)?,
-        details: row.get(4)?,
-        state: row.get(5)?,
-        project: row.get(6)?,
-        author: row.get(7)?,
-        origin: row.get(8)?,
-        source_uri: row.get(9)?,
-        repository: row.get(10)?,
-        commit: row.get(11)?,
-        file: row.get(12)?,
-        line: row.get(13)?,
-        occurred_at: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
-        revision: row.get(17)?,
+        body: row.get(2)?,
+        details: row.get(3)?,
+        state: row.get(4)?,
+        project: row.get(5)?,
+        author: row.get(6)?,
+        origin: row.get(7)?,
+        source_uri: row.get(8)?,
+        repository: row.get(9)?,
+        commit: row.get(10)?,
+        file: row.get(11)?,
+        line: row.get(12)?,
+        occurred_at: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+        revision: row.get(16)?,
         math_kind: row
-            .get::<_, Option<String>>(18)?
+            .get::<_, Option<String>>(17)?
             .map(|value| MathKind::from_str(&value))
             .transpose()
             .map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    18,
+                    17,
                     rusqlite::types::Type::Text,
                     error.into(),
                 )
             })?,
-        formal_system: row.get(19)?,
-        verification: row.get(20)?,
+        formal_system: row.get(18)?,
+        verification: row.get(19)?,
     })
 }
 

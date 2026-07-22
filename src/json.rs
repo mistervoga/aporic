@@ -29,7 +29,7 @@ pub fn option(value: Option<&str>) -> String {
 pub fn entry(value: &Entry) -> String {
     format!(
         concat!(
-            "{{\"id\":{},\"legacy_task_id\":{},\"kind\":{},\"body\":{},",
+            "{{\"id\":{},\"kind\":{},\"body\":{},",
             "\"details\":{},\"state\":{},\"project\":{},\"author\":{},",
             "\"origin\":{},\"source_uri\":{},\"repository\":{},\"commit\":{},",
             "\"file\":{},\"line\":{},\"occurred_at\":{},\"created_at\":{},",
@@ -37,10 +37,6 @@ pub fn entry(value: &Entry) -> String {
             "\"formal_system\":{},\"verification\":{}}}"
         ),
         quote(&value.id),
-        value
-            .legacy_task_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "null".to_string()),
         quote(&value.kind.to_string()),
         quote(&value.body),
         option(value.details.as_deref()),

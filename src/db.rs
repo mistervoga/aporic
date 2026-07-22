@@ -109,12 +109,15 @@ fn migrate_v3(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+// ponytail: databases created before this release still carry the unused
+// `legacy_task_id` column; SQLite cannot drop a UNIQUE column, and no code
+// reads it any more. Rebuild `entries` only if the dead column ever costs
+// something.
 fn create_v1_tables(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         r#"
         CREATE TABLE entries (
             id TEXT PRIMARY KEY,
-            legacy_task_id INTEGER UNIQUE,
             kind TEXT NOT NULL CHECK(kind IN (
                 'observation', 'claim', 'assumption', 'question',
                 'implication', 'action', 'outcome', 'learning'
@@ -141,7 +144,6 @@ fn create_v1_tables(tx: &Transaction<'_>) -> Result<()> {
 
         CREATE INDEX entries_project_kind_state
             ON entries(project_id, kind, state);
-        CREATE INDEX entries_legacy_task_id ON entries(legacy_task_id);
 
         CREATE TABLE relations (
             id TEXT PRIMARY KEY,
@@ -264,6 +266,14 @@ mod tests {
             )
             .expect("legacy table check");
         assert_eq!(legacy_tables, 0);
+        let legacy_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name='legacy_task_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy column check");
+        assert_eq!(legacy_columns, 0);
     }
 
     #[test]

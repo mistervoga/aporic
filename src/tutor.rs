@@ -218,12 +218,9 @@ fn lesson_projects(conn: &mut Connection) -> Result<()> {
          either scoped to one project with --project, or belongs to 'global'\n\
          if you omit it. This is deliberate: no hidden state to lose track of.\n"
     );
-    step(
-        conn,
-        "Try: projects",
-        "type: projects",
-        |cli| matches!(cli.command, Command::Projects),
-    )?;
+    step(conn, "Try: projects", "type: projects", |cli| {
+        matches!(cli.command, Command::Projects)
+    })?;
     step(
         conn,
         "Now capture something scoped to a project. Try:\n  observe --project demo \"trying out project scoping\"",
@@ -272,12 +269,9 @@ fn lesson_inspecting(conn: &mut Connection) -> Result<()> {
         "\nLesson 4: Inspecting\n=====================\n\
          list, show, trace, and status are all read-only.\n"
     );
-    step(
-        conn,
-        "Try: list",
-        "type: list",
-        |cli| matches!(cli.command, Command::List { .. }),
-    )?;
+    step(conn, "Try: list", "type: list", |cli| {
+        matches!(cli.command, Command::List { .. })
+    })?;
 
     let entries = domain::list_entries(conn, EntryFilter::default())?;
     println!("ids you can use below:");
@@ -298,12 +292,9 @@ fn lesson_inspecting(conn: &mut Connection) -> Result<()> {
         "type: trace <id>",
         |cli| matches!(cli.command, Command::Trace { .. }),
     )?;
-    step(
-        conn,
-        "Try: status",
-        "type: status",
-        |cli| matches!(cli.command, Command::Status),
-    )?;
+    step(conn, "Try: status", "type: status", |cli| {
+        matches!(cli.command, Command::Status)
+    })?;
     Ok(())
 }
 
@@ -339,7 +330,10 @@ fn lesson_obsidian(conn: &mut Connection) -> Result<()> {
     let hint = format!("type: obsidian export {}", path.display());
     step(
         conn,
-        &format!("Try (this writes a scratch file, not anything real):\n  obsidian export {}", path.display()),
+        &format!(
+            "Try (this writes a scratch file, not anything real):\n  obsidian export {}",
+            path.display()
+        ),
         &hint,
         |cli| {
             matches!(
