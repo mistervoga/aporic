@@ -75,7 +75,7 @@ options.
 | `projects` | List known projects |
 | `status` | Show database and entry counts |
 | `tui` | Browse entries and traces; press `?` for the complete key reference |
-| `tutor` | Interactive, sandboxed walkthrough of the whole tool |
+| `tutor` | Sandboxed five-minute quickstart with optional learning topics |
 | `obsidian export <path>` | Export entries into a fenced, versioned section of an Obsidian note |
 
 ## Obsidian
