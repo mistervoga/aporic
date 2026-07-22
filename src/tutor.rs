@@ -74,13 +74,27 @@ impl Quickstart {
     }
 
     fn connect_commands(&self) -> (String, String) {
-        let observation = id_prefix(self.observation.as_deref().unwrap());
-        let question = id_prefix(self.question.as_deref().unwrap());
-        let action = id_prefix(self.action.as_deref().unwrap());
+        let ids = self.ids();
+        let observation = id_prefix(self.observation.as_deref().unwrap(), &ids);
+        let question = id_prefix(self.question.as_deref().unwrap(), &ids);
+        let action = id_prefix(self.action.as_deref().unwrap(), &ids);
         (
             format!("link {question} derived-from {observation}"),
             format!("link {question} motivates {action}"),
         )
+    }
+
+    fn ids(&self) -> [&str; 3] {
+        [
+            self.observation.as_deref().unwrap(),
+            self.question.as_deref().unwrap(),
+            self.action.as_deref().unwrap(),
+        ]
+    }
+
+    fn question_reference(&self) -> &str {
+        let ids = self.ids();
+        id_prefix(self.question.as_deref().unwrap(), &ids)
     }
 
     fn apply_outcome(&mut self, outcome: StepOutcome) {
@@ -129,7 +143,7 @@ impl Quickstart {
                 )?
             }
             5 => {
-                let question = id_prefix(self.question.as_deref().unwrap());
+                let question = self.question_reference();
                 let expected = format!("trace {question}");
                 step(
                     conn,
@@ -155,8 +169,15 @@ impl Quickstart {
     }
 }
 
-fn id_prefix(id: &str) -> &str {
-    &id[..8.min(id.len())]
+fn id_prefix<'a>(id: &'a str, ids: &[&str]) -> &'a str {
+    (8.min(id.len())..=id.len())
+        .find(|length| {
+            ids.iter()
+                .filter(|candidate| candidate.starts_with(&id[..*length]))
+                .count()
+                == 1
+        })
+        .map_or(id, |length| &id[..length])
 }
 
 fn quickstart_progress(stage: usize) -> String {
@@ -509,12 +530,17 @@ fn lesson_find_and_finish(conn: &mut Connection) -> Result<()> {
         |cli| matches!(cli.command, Command::Actions { .. }),
     )?;
     let action = latest_id(conn, EntryKind::Action)?;
-    let expected = format!("complete {}", id_prefix(&action));
+    let entries = domain::list_entries(conn, EntryFilter::default())?;
+    let ids = entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    let expected = format!("complete {}", id_prefix(&action, &ids));
     topic_step(
         conn,
         &format!("Complete the ready action. Try: {expected}"),
         &format!("type: {expected}"),
-        |cli| matches!(&cli.command, Command::Complete { id } if id == id_prefix(&action)),
+        |cli| matches!(&cli.command, Command::Complete { id } if id == id_prefix(&action, &ids)),
     )?;
     Ok(())
 }
@@ -632,5 +658,35 @@ mod tests {
         assert_eq!(quickstart.stage, 0);
         quickstart.apply_outcome(StepOutcome::Quit);
         assert_eq!(quickstart.stage, 0);
+    }
+
+    #[test]
+    fn generated_quickstart_commands_resolve_real_ids() -> Result<()> {
+        fn run_command(conn: &mut Connection, line: &str) -> Result<()> {
+            let argv = std::iter::once("aporic".to_string()).chain(shell_words::split(line)?);
+            let cli = Cli::try_parse_from(argv)?;
+            let project = effective_project(cli.project.as_deref());
+            dispatch(conn, &cli, project.as_deref(), &cli.command)
+        }
+
+        let mut conn = Connection::open_in_memory()?;
+        crate::db::ensure_schema(&mut conn)?;
+        let mut quickstart = Quickstart::default();
+
+        run_command(&mut conn, "observe noticed")?;
+        quickstart.observation = Some(latest_id(&conn, EntryKind::Observation)?);
+        run_command(&mut conn, "ask why")?;
+        quickstart.question = Some(latest_id(&conn, EntryKind::Question)?);
+        run_command(&mut conn, "act inspect")?;
+        quickstart.action = Some(latest_id(&conn, EntryKind::Action)?);
+
+        let (first, second) = quickstart.connect_commands();
+        run_command(&mut conn, &first)?;
+        run_command(&mut conn, &second)?;
+        run_command(
+            &mut conn,
+            &format!("trace {}", quickstart.question_reference()),
+        )?;
+        Ok(())
     }
 }
