@@ -1,6 +1,7 @@
 /target
 tasks.db
 *.csv
+.worktrees/
 
 # Local-only agent instructions, deliberately not published
 /AGENT.md
