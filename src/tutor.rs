@@ -1,6 +1,6 @@
 // Interactive, vimtutor-style teacher. Every step parses and runs a real
 // command through the same `dispatch` used by the CLI and the TUI, against
-// an in-memory sandbox database — nothing here is simulated, and nothing
+// an in-memory sandbox database - nothing here is simulated, and nothing
 // here ever touches the user's real Aporic data.
 use crate::domain::{self, EntryFilter, EntryKind, NewEntry};
 use crate::{dispatch, effective_project, Cli, Command, ObsidianCommand};
@@ -60,40 +60,204 @@ fn command_help() -> String {
     String::from_utf8(bytes).unwrap()
 }
 
+#[derive(Default)]
+struct Quickstart {
+    stage: usize,
+    observation: Option<String>,
+    question: Option<String>,
+    action: Option<String>,
+}
+
+impl Quickstart {
+    fn complete(&self) -> bool {
+        self.stage == 6
+    }
+
+    fn connect_commands(&self) -> (String, String) {
+        let observation = id_prefix(self.observation.as_deref().unwrap());
+        let question = id_prefix(self.question.as_deref().unwrap());
+        let action = id_prefix(self.action.as_deref().unwrap());
+        (
+            format!("link {question} derived-from {observation}"),
+            format!("link {question} motivates {action}"),
+        )
+    }
+
+    fn apply_outcome(&mut self, outcome: StepOutcome) {
+        if outcome == StepOutcome::Complete {
+            self.stage += 1;
+        }
+    }
+
+    fn run_next(&mut self, conn: &mut Connection) -> Result<StepOutcome> {
+        let progress = quickstart_progress(self.stage);
+        let outcome = match self.stage {
+            0 => step(
+                conn,
+                &format!("{progress}\n\nCapture what you directly noticed.\nTry:\n  observe \"checkout took 3 seconds\""),
+                "type: observe \"checkout took 3 seconds\" (or help)",
+                |cli| matches!(cli.command, Command::Observe { .. }),
+            )?,
+            1 => step(
+                conn,
+                &format!("{progress}\n\nTurn the observation into an open question.\nTry:\n  ask \"why did checkout get slower?\""),
+                "type: ask \"why did checkout get slower?\" (or help)",
+                |cli| matches!(cli.command, Command::Ask { .. }),
+            )?,
+            2 => step(
+                conn,
+                &format!("{progress}\n\nChoose an action that reduces the uncertainty.\nTry:\n  act \"profile the checkout endpoint\""),
+                "type: act \"profile the checkout endpoint\" (or help)",
+                |cli| matches!(cli.command, Command::Act { .. }),
+            )?,
+            3 | 4 => {
+                let (first, second) = self.connect_commands();
+                let expected = if self.stage == 3 { first } else { second };
+                step(
+                    conn,
+                    &format!("{progress}\n\nConnect the reasoning. The IDs are already filled in.\nType:\n  {expected}"),
+                    &format!("type: {expected} (or help)"),
+                    |cli| match &cli.command {
+                        Command::Link {
+                            from,
+                            relation,
+                            to,
+                            ..
+                        } => format!("link {from} {relation} {to}") == expected,
+                        _ => false,
+                    },
+                )?
+            }
+            5 => {
+                let question = id_prefix(self.question.as_deref().unwrap());
+                let expected = format!("trace {question}");
+                step(
+                    conn,
+                    &format!("{progress}\n\nInspect why the action exists.\nType:\n  {expected}"),
+                    &format!("type: {expected} (or help)"),
+                    |cli| matches!(&cli.command, Command::Trace { id, .. } if id == question),
+                )?
+            }
+            _ => return Ok(StepOutcome::Complete),
+        };
+
+        if outcome != StepOutcome::Complete {
+            return Ok(outcome);
+        }
+        match self.stage {
+            0 => self.observation = Some(latest_id(conn, EntryKind::Observation)?),
+            1 => self.question = Some(latest_id(conn, EntryKind::Question)?),
+            2 => self.action = Some(latest_id(conn, EntryKind::Action)?),
+            _ => {}
+        }
+        self.apply_outcome(outcome);
+        Ok(StepOutcome::Complete)
+    }
+}
+
+fn id_prefix(id: &str) -> &str {
+    &id[..8.min(id.len())]
+}
+
+fn quickstart_progress(stage: usize) -> String {
+    let current = match stage {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 | 4 => 3,
+        _ => 4,
+    };
+    let labels = ["Observe", "Ask", "Act", "Connect", "Trace"];
+    let flow = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| match index.cmp(&current) {
+            std::cmp::Ordering::Less => format!("[x] {label}"),
+            std::cmp::Ordering::Equal => format!("[>] {label}"),
+            std::cmp::Ordering::Greater => format!("[ ] {label}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    format!(
+        "Aporic quickstart                 step {} of 5\n\n{flow}",
+        current + 1
+    )
+}
+
+fn latest_id(conn: &Connection, kind: EntryKind) -> Result<String> {
+    domain::list_entries(
+        conn,
+        EntryFilter {
+            kind: Some(kind),
+            ..EntryFilter::default()
+        },
+    )?
+    .last()
+    .map(|entry| entry.id.clone())
+    .ok_or_else(|| anyhow!("quickstart command created no {kind} entry"))
+}
+
 pub fn run() -> Result<()> {
     let mut conn = Connection::open_in_memory()?;
     crate::db::ensure_schema(&mut conn)?;
 
     println!(
         "\naporic tutor\n============\n\
-         A vimtutor-style walkthrough. Every command you type here is a real\n\
-         Aporic command, run against a throw-away in-memory database — your\n\
-         real project data is never touched. Type 'menu' at any prompt to go\n\
-         back to this list, or 'q' here to leave.\n"
+         Every command runs against a throw-away in-memory database. Your\n\
+         real project data is never touched. At any prompt: help, commands,\n\
+         menu, or quit.\n"
     );
 
+    let mut quickstart = Quickstart::default();
+    while !quickstart.complete() {
+        match quickstart.run_next(&mut conn)? {
+            StepOutcome::Complete => {}
+            StepOutcome::Menu => {
+                if topic_menu(&mut conn, true)? == StepOutcome::Quit {
+                    println!("\nGoodbye - the sandbox was discarded.");
+                    return Ok(());
+                }
+            }
+            StepOutcome::Quit => {
+                println!("\nGoodbye - the sandbox was discarded.");
+                return Ok(());
+            }
+        }
+    }
+
+    println!(
+        "Quickstart complete. You captured uncertainty, connected it to an\n\
+         action, and inspected why that action exists.\n"
+    );
+    let _ = topic_menu(&mut conn, false)?;
+    println!("\nGoodbye - the sandbox was discarded.");
+    Ok(())
+}
+
+fn topic_menu(conn: &mut Connection, resumable: bool) -> Result<StepOutcome> {
     loop {
         println!(
-            "\nLessons:\n\
-             \x20 1) Vocabulary — the reasoning lifecycle\n\
-             \x20 2) Capture and connect a first reasoning chain\n\
-             \x20 3) Projects — scoping your work with --project\n\
-             \x20 4) Inspecting — list, show, trace, status\n\
-             \x20 5) The interactive view — aporic tui\n\
-             \x20 6) Exporting into Obsidian\n\
-             \x20 q) Quit the tutor\n"
+            "\nTopics:\n\
+             \x20 1) Capture types - reasoning and mathematics\n\
+             \x20 2) Find and finish - list, show, trace, actions, complete\n\
+             \x20 3) Context - projects and metadata\n\
+             \x20 4) Workbench - aporic tui\n\
+             \x20 5) Export - Obsidian\n\
+             \x20 q) Quit the tutor"
         );
+        if resumable {
+            println!("  enter) Return to the quickstart");
+        }
+
         let Some(choice) = read_line("aporic tutor> ")? else {
-            break;
+            return Ok(StepOutcome::Quit);
         };
         let outcome = match choice.trim() {
-            "1" => lesson_vocabulary(&mut conn),
-            "2" => lesson_first_chain(&mut conn),
-            "3" => lesson_projects(&mut conn),
-            "4" => lesson_inspecting(&mut conn),
-            "5" => lesson_tui(&mut conn),
-            "6" => lesson_obsidian(&mut conn),
-            "q" | "quit" | "exit" => break,
+            "1" => lesson_capture_types(conn),
+            "2" => lesson_find_and_finish(conn),
+            "3" => lesson_context(conn),
+            "4" => lesson_workbench(conn),
+            "5" => lesson_export(conn),
             "help" => {
                 println!("Choose a topic number, or use commands, menu, or quit.");
                 continue;
@@ -103,24 +267,23 @@ pub fn run() -> Result<()> {
                 continue;
             }
             "menu" => continue,
+            "q" | "quit" | "exit" => return Ok(StepOutcome::Quit),
+            "" if resumable => return Ok(StepOutcome::Complete),
             "" => continue,
             other => {
-                println!("unknown option: {other}");
+                println!("unknown option: {other}. Type help for menu help.");
                 continue;
             }
         };
         if let Err(err) = outcome {
             if err.downcast_ref::<ExitTutor>().is_some() {
-                break;
+                return Ok(StepOutcome::Quit);
             }
             if err.downcast_ref::<ExitLesson>().is_none() {
                 return Err(err);
             }
         }
     }
-
-    println!("\nGoodbye — the sandbox is discarded, your real data was never touched.");
-    Ok(())
 }
 
 fn read_line(prompt: &str) -> Result<Option<String>> {
@@ -211,9 +374,9 @@ fn topic_step(
     }
 }
 
-fn lesson_vocabulary(conn: &mut Connection) -> Result<()> {
+fn lesson_capture_types(conn: &mut Connection) -> Result<()> {
     println!(
-        "\nLesson 1: Vocabulary\n=====================\n\
+        "\nCapture types\n=============\n\
          Aporic records reasoning as small typed entries instead of one flat\n\
          task list:\n\n  \
          observation -> claim -> question -> implication -> action -> outcome -> learning\n\n\
@@ -225,8 +388,10 @@ fn lesson_vocabulary(conn: &mut Connection) -> Result<()> {
          action        a concrete next step\n\
          outcome       what happened after an action\n\
          learning      a durable update to how you'll work next time\n\n\
-         (Mathematics uses the same model with definition, conjecture, lemma,\n\
-         theorem, proof, counterexample, example, and calculation.)\n"
+         Capture these with observe, claim, assume, ask, imply, act, outcome,\n\
+         and learn. Each command prints an ID you can use with link.\n\n\
+         Mathematics uses the same model with define, conjecture, lemma,\n\
+         theorem, proof, counterexample, example, and calculate.\n"
     );
     topic_step(
         conn,
@@ -234,65 +399,13 @@ fn lesson_vocabulary(conn: &mut Connection) -> Result<()> {
         "type: status",
         |cli| matches!(cli.command, Command::Status),
     )?;
-    println!("Good — an empty project. On to a first real chain (lesson 2).");
     Ok(())
 }
 
-fn lesson_first_chain(conn: &mut Connection) -> Result<()> {
+fn lesson_context(conn: &mut Connection) -> Result<()> {
     println!(
-        "\nLesson 2: Capture and connect\n==============================\n\
-         Each command below prints the id of what it created. You'll use two\n\
-         of those ids in the last step, so keep an eye on the output.\n"
-    );
-    topic_step(
-        conn,
-        "Step 1 — observe something. Try:\n  observe \"the checkout page took 3s to load\"",
-        "start the line with observe, followed by a quoted sentence",
-        |cli| matches!(cli.command, Command::Observe { .. }),
-    )?;
-    topic_step(
-        conn,
-        "Step 2 — turn it into a question. Try:\n  ask \"why did checkout get slower?\"",
-        "start the line with ask",
-        |cli| matches!(cli.command, Command::Ask { .. }),
-    )?;
-    topic_step(
-        conn,
-        "Step 3 — decide what to do about it. Try:\n  act \"profile the checkout endpoint\"",
-        "start the line with act",
-        |cli| matches!(cli.command, Command::Act { .. }),
-    )?;
-    topic_step(
-        conn,
-        "Step 4 — record what happened. Try:\n  outcome \"the product-image query was the bottleneck\"",
-        "start the line with outcome",
-        |cli| matches!(cli.command, Command::Outcome { .. }),
-    )?;
-    topic_step(
-        conn,
-        "Step 5 — capture the durable lesson. Try:\n  learn \"cache expensive queries before they reach checkout\"",
-        "start the line with learn",
-        |cli| matches!(cli.command, Command::Learn { .. }),
-    )?;
-    println!(
-        "Now connect two entries. Pick two ids from the output above and try:\n  \
-         link <id> answers <id>\n\
-         (other relations exist too: supports, challenges, motivates, result-of, derived-from...)"
-    );
-    topic_step(
-        conn,
-        "Step 6 — link two entries.",
-        "type: link <id> <relation> <id> — use ids printed earlier in this lesson",
-        |cli| matches!(cli.command, Command::Link { .. }),
-    )?;
-    println!("That's a full reasoning chain. Lesson 4 shows how to inspect it later.");
-    Ok(())
-}
-
-fn lesson_projects(conn: &mut Connection) -> Result<()> {
-    println!(
-        "\nLesson 3: Projects\n===================\n\
-         Aporic never remembers a default project for you — every command is\n\
+        "\nContext\n=======\n\
+         Aporic never remembers a default project for you - every command is\n\
          either scoped to one project with --project, or belongs to 'global'\n\
          if you omit it. This is deliberate: no hidden state to lose track of.\n"
     );
@@ -301,13 +414,17 @@ fn lesson_projects(conn: &mut Connection) -> Result<()> {
     })?;
     topic_step(
         conn,
-        "Now capture something scoped to a project. Try:\n  observe --project demo \"trying out project scoping\"",
-        "add --project demo before or after the quoted text",
-        |cli| matches!(cli.command, Command::Observe { .. }) && cli.project.is_some(),
+        "Now capture project and source context. Try:\n  observe --project demo --source https://example.test/report \"trying project context\"",
+        "type: observe --project demo --source https://example.test/report \"trying project context\"",
+        |cli| {
+            matches!(cli.command, Command::Observe { .. })
+                && cli.project.is_some()
+                && cli.source.is_some()
+        },
     )?;
     topic_step(
         conn,
-        "Check again — 'demo' should now be listed too:",
+        "Check again - 'demo' should now be listed too:",
         "type: projects",
         |cli| matches!(cli.command, Command::Projects),
     )?;
@@ -315,37 +432,39 @@ fn lesson_projects(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-fn lesson_inspecting(conn: &mut Connection) -> Result<()> {
-    let seeded = domain::list_entries(conn, EntryFilter::default())?.is_empty();
-    if seeded {
+fn lesson_find_and_finish(conn: &mut Connection) -> Result<()> {
+    let entries = domain::list_entries(conn, EntryFilter::default())?;
+    if !entries
+        .iter()
+        .any(|entry| entry.kind == EntryKind::Observation)
+    {
         domain::create_entry(
             conn,
             EntryKind::Observation,
-            "sample observation seeded for this lesson",
+            "sample observation seeded for this topic",
             NewEntry {
                 author: "tutor",
                 origin: "tutor",
                 ..NewEntry::default()
             },
         )?;
+    }
+    if !entries.iter().any(|entry| entry.kind == EntryKind::Action) {
         domain::create_entry(
             conn,
             EntryKind::Action,
-            "sample action seeded for this lesson",
+            "sample action seeded for this topic",
             NewEntry {
                 author: "tutor",
                 origin: "tutor",
                 ..NewEntry::default()
             },
         )?;
-        println!(
-            "\n(This lesson works standalone, so the sandbox was seeded with two\n\
-             sample entries since it was otherwise empty.)"
-        );
     }
     println!(
-        "\nLesson 4: Inspecting\n=====================\n\
-         list, show, trace, and status are all read-only.\n"
+        "\nFind and finish\n===============\n\
+         list, show, and trace inspect work without changing it. actions and\n\
+         complete help find and finish ready work.\n"
     );
     topic_step(conn, "Try: list", "type: list", |cli| {
         matches!(cli.command, Command::List { .. })
@@ -360,46 +479,72 @@ fn lesson_inspecting(conn: &mut Connection) -> Result<()> {
 
     topic_step(
         conn,
-        "Try: show <id> — use one of the ids above (a unique prefix is enough)",
+        "Try: show <id> - use one of the ids above (a unique prefix is enough)",
         "type: show <id>",
         |cli| matches!(cli.command, Command::Show { .. }),
     )?;
     topic_step(
         conn,
-        "Try: trace <id> — shows the local reasoning graph around an entry",
+        "Try: trace <id> - shows the local reasoning graph around an entry",
         "type: trace <id>",
         |cli| matches!(cli.command, Command::Trace { .. }),
     )?;
-    topic_step(conn, "Try: status", "type: status", |cli| {
-        matches!(cli.command, Command::Status)
-    })?;
+    topic_step(
+        conn,
+        "Filter to open questions. Try: list --type question --state open",
+        "type: list --type question --state open",
+        |cli| {
+            matches!(
+                &cli.command,
+                Command::List { r#type, state, .. }
+                    if r#type.as_deref() == Some("question")
+                        && state.as_deref() == Some("open")
+            )
+        },
+    )?;
+    topic_step(
+        conn,
+        "Show ready work. Try: actions",
+        "type: actions",
+        |cli| matches!(cli.command, Command::Actions { .. }),
+    )?;
+    let action = latest_id(conn, EntryKind::Action)?;
+    let expected = format!("complete {}", id_prefix(&action));
+    topic_step(
+        conn,
+        &format!("Complete the ready action. Try: {expected}"),
+        &format!("type: {expected}"),
+        |cli| matches!(&cli.command, Command::Complete { id } if id == id_prefix(&action)),
+    )?;
     Ok(())
 }
 
-fn lesson_tui(conn: &mut Connection) -> Result<()> {
+fn lesson_workbench(conn: &mut Connection) -> Result<()> {
     println!(
-        "\nLesson 5: The interactive view\n===============================\n\
+        "\nWorkbench\n=========\n\
          aporic tui gives you a full-screen view of the same data: a\n\
          filterable list, a detail panel, and a trace view. It launches now\n\
          inside this same sandbox, so it shows whatever you've built in\n\
-         earlier lessons. Press q inside it to come back here.\n"
+         the quickstart. ? opens key help; q returns here.\n"
     );
-    let Some(_) = read_line("Press enter to launch aporic tui> ")? else {
-        return Err(anyhow!(ExitLesson));
-    };
-    crate::tui::run(conn, None)?;
+    topic_step(
+        conn,
+        "Type `tui` to open the workbench. Inside it, press ? for key help.",
+        "type: tui",
+        |cli| matches!(cli.command, Command::Tui),
+    )?;
     println!(
         "\nWelcome back. Quick reference: j/k move, Tab switches list filters,\n\
          enter/t toggle detail and trace, c completes the selected action,\n\
-         p cycles the project, q quits.\n"
+         p cycles the project, ? opens key help, q quits.\n"
     );
     Ok(())
 }
 
-fn lesson_obsidian(conn: &mut Connection) -> Result<()> {
+fn lesson_export(conn: &mut Connection) -> Result<()> {
     let path = std::env::temp_dir().join("aporic-tutor-export.md");
     println!(
-        "\nLesson 6: Exporting into Obsidian\n===================================\n\
+        "\nExport\n======\n\
          Export writes entries between markers:\n\n  \
          <!-- aporic:start version=1 -->\n  ...\n  <!-- aporic:end -->\n\n\
          Only that fenced block is ever rewritten. Anything you write outside\n\
@@ -452,5 +597,40 @@ mod tests {
         assert!(help.contains("observe"));
         assert!(help.contains("tutor"));
         assert!(!help.contains("ai examine"));
+    }
+
+    #[test]
+    fn quickstart_progress_groups_both_links_into_connect() {
+        assert!(quickstart_progress(0).contains("[>] Observe"));
+        assert!(quickstart_progress(3).contains("[>] Connect"));
+        assert!(quickstart_progress(4).contains("[>] Connect"));
+        assert!(quickstart_progress(5).contains("[>] Trace"));
+    }
+
+    #[test]
+    fn connect_commands_use_generated_id_prefixes() {
+        let quickstart = Quickstart {
+            stage: 3,
+            observation: Some("01911111-observation".into()),
+            question: Some("01922222-question".into()),
+            action: Some("01933333-action".into()),
+        };
+
+        assert_eq!(
+            quickstart.connect_commands(),
+            (
+                "link 01922222 derived-from 01911111".to_string(),
+                "link 01922222 motivates 01933333".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn non_completed_outcomes_do_not_advance_quickstart() {
+        let mut quickstart = Quickstart::default();
+        quickstart.apply_outcome(StepOutcome::Menu);
+        assert_eq!(quickstart.stage, 0);
+        quickstart.apply_outcome(StepOutcome::Quit);
+        assert_eq!(quickstart.stage, 0);
     }
 }

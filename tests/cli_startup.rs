@@ -40,3 +40,26 @@ fn help_does_not_advertise_legacy_ids() {
     assert!(stdout.contains("UUID or unique UUID prefix"));
     assert!(!stdout.contains("legacy task ID"));
 }
+
+#[test]
+fn wrong_tutor_input_stays_on_the_current_step() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aporic"))
+        .arg("tutor")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"status\nquit\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    assert!(output.status.success());
+    assert!(stdout.contains("Not quite what this step needs"));
+    assert!(stdout.contains("step 1 of 5"));
+    assert!(!stdout.contains("step 2 of 5"));
+}
