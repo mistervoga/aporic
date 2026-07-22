@@ -73,28 +73,18 @@ impl Quickstart {
         self.stage == 6
     }
 
-    fn connect_commands(&self) -> (String, String) {
-        let ids = self.ids();
-        let observation = id_prefix(self.observation.as_deref().unwrap(), &ids);
-        let question = id_prefix(self.question.as_deref().unwrap(), &ids);
-        let action = id_prefix(self.action.as_deref().unwrap(), &ids);
+    fn connect_commands(&self, ids: &[&str]) -> (String, String) {
+        let observation = id_prefix(self.observation.as_deref().unwrap(), ids);
+        let question = id_prefix(self.question.as_deref().unwrap(), ids);
+        let action = id_prefix(self.action.as_deref().unwrap(), ids);
         (
             format!("link {question} derived-from {observation}"),
             format!("link {question} motivates {action}"),
         )
     }
 
-    fn ids(&self) -> [&str; 3] {
-        [
-            self.observation.as_deref().unwrap(),
-            self.question.as_deref().unwrap(),
-            self.action.as_deref().unwrap(),
-        ]
-    }
-
-    fn question_reference(&self) -> &str {
-        let ids = self.ids();
-        id_prefix(self.question.as_deref().unwrap(), &ids)
+    fn question_reference<'a>(&'a self, ids: &[&str]) -> &'a str {
+        id_prefix(self.question.as_deref().unwrap(), ids)
     }
 
     fn apply_outcome(&mut self, outcome: StepOutcome) {
@@ -125,7 +115,9 @@ impl Quickstart {
                 |cli| matches!(cli.command, Command::Act { .. }),
             )?,
             3 | 4 => {
-                let (first, second) = self.connect_commands();
+                let sandbox_ids = sandbox_ids(conn)?;
+                let ids = sandbox_ids.iter().map(String::as_str).collect::<Vec<_>>();
+                let (first, second) = self.connect_commands(&ids);
                 let expected = if self.stage == 3 { first } else { second };
                 step(
                     conn,
@@ -143,7 +135,9 @@ impl Quickstart {
                 )?
             }
             5 => {
-                let question = self.question_reference();
+                let sandbox_ids = sandbox_ids(conn)?;
+                let ids = sandbox_ids.iter().map(String::as_str).collect::<Vec<_>>();
+                let question = self.question_reference(&ids);
                 let expected = format!("trace {question}");
                 step(
                     conn,
@@ -178,6 +172,13 @@ fn id_prefix<'a>(id: &'a str, ids: &[&str]) -> &'a str {
                 == 1
         })
         .map_or(id, |length| &id[..length])
+}
+
+fn sandbox_ids(conn: &Connection) -> Result<Vec<String>> {
+    Ok(domain::list_entries(conn, EntryFilter::default())?
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect())
 }
 
 fn quickstart_progress(stage: usize) -> String {
@@ -216,6 +217,32 @@ fn latest_id(conn: &Connection, kind: EntryKind) -> Result<String> {
     .last()
     .map(|entry| entry.id.clone())
     .ok_or_else(|| anyhow!("quickstart command created no {kind} entry"))
+}
+
+fn find_and_finish_action(conn: &mut Connection) -> Result<String> {
+    if let Some(action) = domain::list_entries(
+        conn,
+        EntryFilter {
+            kind: Some(EntryKind::Action),
+            state: Some("open"),
+            ..EntryFilter::default()
+        },
+    )?
+    .last()
+    {
+        return Ok(action.id.clone());
+    }
+    Ok(domain::create_entry(
+        conn,
+        EntryKind::Action,
+        "sample action seeded for this topic",
+        NewEntry {
+            author: "tutor",
+            origin: "tutor",
+            ..NewEntry::default()
+        },
+    )?
+    .id)
 }
 
 pub fn run() -> Result<()> {
@@ -470,18 +497,7 @@ fn lesson_find_and_finish(conn: &mut Connection) -> Result<()> {
             },
         )?;
     }
-    if !entries.iter().any(|entry| entry.kind == EntryKind::Action) {
-        domain::create_entry(
-            conn,
-            EntryKind::Action,
-            "sample action seeded for this topic",
-            NewEntry {
-                author: "tutor",
-                origin: "tutor",
-                ..NewEntry::default()
-            },
-        )?;
-    }
+    let action = find_and_finish_action(conn)?;
     println!(
         "\nFind and finish\n===============\n\
          list, show, and trace inspect work without changing it. actions and\n\
@@ -492,9 +508,18 @@ fn lesson_find_and_finish(conn: &mut Connection) -> Result<()> {
     })?;
 
     let entries = domain::list_entries(conn, EntryFilter::default())?;
+    let ids = entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
     println!("ids you can use below:");
     for entry in &entries {
-        println!("  {} {:<11} {}", &entry.id[..8], entry.kind, entry.body);
+        println!(
+            "  {} {:<11} {}",
+            id_prefix(&entry.id, &ids),
+            entry.kind,
+            entry.body
+        );
     }
     println!();
 
@@ -529,12 +554,8 @@ fn lesson_find_and_finish(conn: &mut Connection) -> Result<()> {
         "type: actions",
         |cli| matches!(cli.command, Command::Actions { .. }),
     )?;
-    let action = latest_id(conn, EntryKind::Action)?;
-    let entries = domain::list_entries(conn, EntryFilter::default())?;
-    let ids = entries
-        .iter()
-        .map(|entry| entry.id.as_str())
-        .collect::<Vec<_>>();
+    let sandbox_ids = sandbox_ids(conn)?;
+    let ids = sandbox_ids.iter().map(String::as_str).collect::<Vec<_>>();
     let expected = format!("complete {}", id_prefix(&action, &ids));
     topic_step(
         conn,
@@ -605,6 +626,13 @@ fn lesson_export(conn: &mut Connection) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn run_command(conn: &mut Connection, line: &str) -> Result<()> {
+        let argv = std::iter::once("aporic".to_string()).chain(shell_words::split(line)?);
+        let cli = Cli::try_parse_from(argv)?;
+        let project = effective_project(cli.project.as_deref());
+        dispatch(conn, &cli, project.as_deref(), &cli.command)
+    }
+
     #[test]
     fn recognizes_controls_without_treating_cli_commands_as_controls() {
         assert_eq!(tutor_control("help"), Some(TutorControl::Help));
@@ -642,8 +670,13 @@ mod tests {
             action: Some("01933333-action".into()),
         };
 
+        let ids = [
+            quickstart.observation.as_deref().unwrap(),
+            quickstart.question.as_deref().unwrap(),
+            quickstart.action.as_deref().unwrap(),
+        ];
         assert_eq!(
-            quickstart.connect_commands(),
+            quickstart.connect_commands(&ids),
             (
                 "link 01922222 derived-from 01911111".to_string(),
                 "link 01922222 motivates 01933333".to_string(),
@@ -662,13 +695,6 @@ mod tests {
 
     #[test]
     fn generated_quickstart_commands_resolve_real_ids() -> Result<()> {
-        fn run_command(conn: &mut Connection, line: &str) -> Result<()> {
-            let argv = std::iter::once("aporic".to_string()).chain(shell_words::split(line)?);
-            let cli = Cli::try_parse_from(argv)?;
-            let project = effective_project(cli.project.as_deref());
-            dispatch(conn, &cli, project.as_deref(), &cli.command)
-        }
-
         let mut conn = Connection::open_in_memory()?;
         crate::db::ensure_schema(&mut conn)?;
         let mut quickstart = Quickstart::default();
@@ -680,13 +706,81 @@ mod tests {
         run_command(&mut conn, "act inspect")?;
         quickstart.action = Some(latest_id(&conn, EntryKind::Action)?);
 
-        let (first, second) = quickstart.connect_commands();
+        let sandbox_ids = sandbox_ids(&conn)?;
+        let ids = sandbox_ids.iter().map(String::as_str).collect::<Vec<_>>();
+        let (first, second) = quickstart.connect_commands(&ids);
         run_command(&mut conn, &first)?;
         run_command(&mut conn, &second)?;
         run_command(
             &mut conn,
-            &format!("trace {}", quickstart.question_reference()),
+            &format!("trace {}", quickstart.question_reference(&ids)),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn resumed_quickstart_uses_prefixes_unique_across_the_sandbox() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        crate::db::ensure_schema(&mut conn)?;
+        let mut quickstart = Quickstart::default();
+        run_command(&mut conn, "observe noticed")?;
+        quickstart.observation = Some(latest_id(&conn, EntryKind::Observation)?);
+        run_command(&mut conn, "ask why")?;
+        quickstart.question = Some(latest_id(&conn, EntryKind::Question)?);
+        run_command(&mut conn, "act inspect")?;
+        quickstart.action = Some(latest_id(&conn, EntryKind::Action)?);
+
+        let quickstart_ids = [
+            quickstart.observation.as_deref().unwrap(),
+            quickstart.question.as_deref().unwrap(),
+            quickstart.action.as_deref().unwrap(),
+        ];
+        let observation_prefix = quickstart
+            .connect_commands(&quickstart_ids)
+            .0
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .to_string();
+        run_command(&mut conn, "claim extra")?;
+        let extra = latest_id(&conn, EntryKind::Claim)?;
+        conn.execute(
+            "UPDATE entries SET id=?1 WHERE id=?2",
+            rusqlite::params![format!("{observation_prefix}x"), extra],
+        )?;
+
+        let entries = domain::list_entries(&conn, EntryFilter::default())?;
+        let ids = entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>();
+        let (first, second) = quickstart.connect_commands(&ids);
+        run_command(&mut conn, &first)?;
+        run_command(&mut conn, &second)?;
+        run_command(
+            &mut conn,
+            &format!("trace {}", quickstart.question_reference(&ids)),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn find_and_finish_seeds_an_open_action_when_all_actions_are_done() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        crate::db::ensure_schema(&mut conn)?;
+        let done = domain::create_entry(
+            &mut conn,
+            EntryKind::Action,
+            "already finished",
+            NewEntry::default(),
+        )?;
+        domain::complete_action(&mut conn, &done.id)?;
+
+        let selected = find_and_finish_action(&mut conn)?;
+        let entry = domain::get_entry(&conn, &selected)?;
+
+        assert_ne!(selected, done.id);
+        assert_eq!(entry.state, "open");
         Ok(())
     }
 }
