@@ -1,4 +1,4 @@
-// Interactive, vimtutor-style teacher. Every step parses and runs a real
+// Interactive five-minute quickstart and optional topics. Every step runs a real
 // command through the same `dispatch` used by the CLI and the TUI, against
 // an in-memory sandbox database - nothing here is simulated, and nothing
 // here ever touches the user's real Aporic data.

@@ -167,7 +167,7 @@ enum Command {
     /// Open the interactive terminal view
     Tui,
 
-    /// Interactive, vimtutor-style walkthrough in a sandbox database
+    /// Sandboxed five-minute quickstart with optional learning topics
     Tutor,
 
     /// Export an Aporic-owned section into an Obsidian note

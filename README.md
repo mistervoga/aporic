@@ -49,11 +49,11 @@ aporic tutor     # learn the tool interactively, in a throw-away sandbox
 aporic tui       # browse and inspect your actual entries
 ```
 
-`aporic tutor` is the primary way to learn Aporic: it is a vimtutor-style
-walkthrough that runs real commands against a sandbox, not your real data.
-It covers the reasoning lifecycle, projects, inspecting a trace, the TUI, and
-Obsidian export end to end — that material is deliberately not duplicated
-here.
+`aporic tutor` starts with a five-minute quickstart that runs real commands in
+a throw-away sandbox. It takes you from an observation through a question and
+action to a connected trace, then offers optional topics for capture types,
+projects, inspection, the TUI, and Obsidian export. At any tutor prompt, use
+`help`, `commands`, `menu`, or `quit`.
 
 ## Commands
 
@@ -74,7 +74,7 @@ options.
 | `actions` | List ready actions |
 | `projects` | List known projects |
 | `status` | Show database and entry counts |
-| `tui` | Open the interactive terminal view |
+| `tui` | Browse entries and traces; press `?` for the complete key reference |
 | `tutor` | Interactive, sandboxed walkthrough of the whole tool |
 | `obsidian export <path>` | Export entries into a fenced, versioned section of an Obsidian note |
 
@@ -89,7 +89,7 @@ Aporic writes only between versioned markers:
 ```
 
 Handwritten content outside the markers is preserved on every re-export.
-`aporic tutor` (lesson 6) walks through this against a scratch file before you
+The tutor's Export topic walks through this against a scratch file before you
 try it on a real note.
 
 ## Storage
