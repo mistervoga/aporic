@@ -130,7 +130,7 @@ enum Command {
         math_type: Option<String>,
     },
 
-    /// Show one entry by UUID, unique UUID prefix, or legacy task ID
+    /// Show one entry by UUID or unique UUID prefix
     Show { id: String },
 
     /// Connect two entries with a typed relation
@@ -195,6 +195,10 @@ struct StatusOutput {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if matches!(&cli.command, Command::Tutor) {
+        return tutor::run();
+    }
+
     let mut conn = db::connect_and_init()?;
     let project = effective_project(cli.project.as_deref());
     dispatch(&mut conn, &cli, project.as_deref(), &cli.command)
