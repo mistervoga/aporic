@@ -12,7 +12,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::{Frame, Terminal};
 use rusqlite::Connection;
 use std::io::stdout;
@@ -74,6 +74,7 @@ struct App {
     right: RightPane,
     status: String,
     pending_complete: bool,
+    show_help: bool,
     quit: bool,
 }
 
@@ -96,6 +97,7 @@ impl App {
             status: "j/k move  enter/t detail/trace  c complete  p project  ? help  q quit"
                 .to_string(),
             pending_complete: false,
+            show_help: false,
             quit: false,
         };
         app.reload(conn)?;
@@ -250,39 +252,49 @@ fn event_loop(
             continue;
         }
 
-        if app.pending_complete {
-            app.pending_complete = false;
-            if key.code == KeyCode::Char('y') {
-                app.complete_selected(conn)?;
-            } else {
-                app.status = "cancelled".to_string();
-            }
-            continue;
-        }
+        handle_key(&mut app, conn, key.code)?;
+    }
+    Ok(())
+}
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
-            KeyCode::Char('j') | KeyCode::Down => app.next(),
-            KeyCode::Char('k') | KeyCode::Up => app.previous(),
-            KeyCode::Tab => app.change_tab(),
-            KeyCode::Enter => app.right = RightPane::Detail,
-            KeyCode::Char('t') => app.show_trace(conn)?,
-            KeyCode::Char('p') => app.cycle_project(conn)?,
-            KeyCode::Char('c') => {
-                if let Some(entry) = app.selected_entry() {
-                    if entry.kind == EntryKind::Action {
-                        app.pending_complete = true;
-                        app.status = "complete this action? (y/n)".to_string();
-                    } else {
-                        app.status = "only actions can be completed".to_string();
-                    }
+fn handle_key(app: &mut App, conn: &mut Connection, key: KeyCode) -> Result<()> {
+    if app.show_help {
+        if matches!(key, KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc) {
+            app.show_help = false;
+        }
+        return Ok(());
+    }
+
+    if app.pending_complete {
+        app.pending_complete = false;
+        if key == KeyCode::Char('y') {
+            app.complete_selected(conn)?;
+        } else {
+            app.status = "cancelled".to_string();
+        }
+        return Ok(());
+    }
+
+    match key {
+        KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
+        KeyCode::Char('j') | KeyCode::Down => app.next(),
+        KeyCode::Char('k') | KeyCode::Up => app.previous(),
+        KeyCode::Tab => app.change_tab(),
+        KeyCode::Enter => app.right = RightPane::Detail,
+        KeyCode::Char('t') => app.show_trace(conn)?,
+        KeyCode::Char('p') => app.cycle_project(conn)?,
+        KeyCode::Char('c') => {
+            if let Some(entry) = app.selected_entry() {
+                if entry.kind == EntryKind::Action {
+                    app.pending_complete = true;
+                    app.status = "complete this action? (y/n)".to_string();
+                } else {
+                    app.status = "only actions can be completed".to_string();
                 }
             }
-            KeyCode::Char('?') => {
-                app.status = "full walkthrough: run  aporic tutor  outside the TUI".to_string();
-            }
-            _ => {}
         }
+        KeyCode::Char('?') => app.show_help = true,
+        _ => {}
     }
     Ok(())
 }
@@ -308,6 +320,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
     draw_list(frame, app, columns[0]);
     draw_right(frame, app, columns[1]);
     draw_status(frame, app, rows[2]);
+
+    if app.show_help {
+        draw_help(frame, area);
+    }
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
@@ -318,7 +334,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" aporic \u{2014} project: {project_label} ")),
+                .title(format!(" aporic - project: {project_label} ")),
         )
         .highlight_style(
             Style::default()
@@ -433,4 +449,54 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     );
     let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(paragraph, area);
+}
+
+fn draw_help(frame: &mut Frame, area: Rect) {
+    let width = area.width.min(58);
+    let height = area.height.min(15);
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let help = Paragraph::new(
+        "j / Down    next entry\n\
+         k / Up      previous entry\n\
+         Tab         next filter\n\
+         Enter       show details\n\
+         t           show trace\n\
+         c           complete action\n\
+         p           next project\n\
+         ?           close this help\n\
+         q / Esc     close help, then quit",
+    )
+    .block(Block::default().borders(Borders::ALL).title(" keys "))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, popup);
+    frame.render_widget(help, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_overlay_closes_before_quit_is_handled() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::ensure_schema(&mut conn).unwrap();
+        let mut app = App::new(&conn, None).unwrap();
+
+        handle_key(&mut app, &mut conn, KeyCode::Char('?')).unwrap();
+        assert!(app.show_help);
+
+        handle_key(&mut app, &mut conn, KeyCode::Char('q')).unwrap();
+        assert!(!app.show_help);
+        assert!(!app.quit);
+
+        handle_key(&mut app, &mut conn, KeyCode::Char('?')).unwrap();
+        handle_key(&mut app, &mut conn, KeyCode::Esc).unwrap();
+        assert!(!app.show_help);
+        assert!(!app.quit);
+    }
 }
