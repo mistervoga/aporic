@@ -55,6 +55,28 @@ action to a connected trace, then offers optional topics for capture types,
 projects, inspection, the TUI, and Obsidian export. At any tutor prompt, use
 `help`, `commands`, `menu`, or `quit`.
 
+The quickstart makes this reasoning path visible as you work:
+
+```text
+Observe -> Ask -> Act -> Connect -> Trace
+```
+
+It fills the generated entry IDs into the link and trace commands for you.
+Those IDs stay unique even when other sandbox entries were created from the
+optional topics. The sandbox is discarded when you quit.
+
+### Tutor controls
+
+| Input | Effect |
+|---|---|
+| `help` | Show the current step's input hint and example |
+| `commands` | Show the implemented CLI command reference |
+| `menu` | Open the optional learning topics; return to the same quickstart step |
+| `quit` / `q` / `exit` | Discard the sandbox and leave the tutor |
+
+Inside `aporic tui`, press `?` for its full key reference. While that overlay
+is open, `?`, `q`, or `Esc` closes it before any normal TUI action is handled.
+
 ## Commands
 
 Every command accepts `--project <name>` (omit for `global`) and `--json` for
